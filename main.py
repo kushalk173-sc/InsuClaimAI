@@ -2,7 +2,7 @@
 """
 Created on Sat Sep  9 16:43:27 2023
 
-@author: Kushal
+@author: Tanay Shah, Kushal Kapoor
 """
 
 import flet as ft
@@ -27,22 +27,21 @@ import os
 from roboflow import Roboflow
 import PyPDF2
 from PIL import Image
-
-
+import nltk
 from twilio.rest import Client
-
+from flet import Theme
+nltk.data.path.append("./Auth/nltk_data")
 
 
 def main(page: ft.Page):
-    
-        
+
     kv_model = Word2Vec.load("model/model-50d.h5").wv
-    
+
     stop_words = set(stopwords.words('english'))
-    
-    
+
+    account_sid = '<ACCOUNT_SID>'
+    auth_token = '<AUTH_TOKEN>'
     client = Client(account_sid, auth_token)
-    
 
     def make_call():
         global karen_text
@@ -51,12 +50,10 @@ def main(page: ft.Page):
             twiml=f'''<Response><Say>
 {karen_text}
                                 </Say></Response>''',
-            to='+12404137915',
+            to='<PHONE_NUMBER>',
             from_='+19139386952'
         )
 
-    
-    
     def extract_pdf_contents(file_path):
         with open(file_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
@@ -64,10 +61,9 @@ def main(page: ft.Page):
             for page_num in range(len(pdf_reader.pages)-1):
                 page = pdf_reader.pages[page_num]
                 contents += page.extract_text()
-    
+
         return contents
-    
-    
+
     def preprocess(file):
         current_directory = os.getcwd()
         folder_name = "insurance"
@@ -75,37 +71,39 @@ def main(page: ft.Page):
         file_path = folder_path + '/' + file
         extracted_contents = extract_pdf_contents(file_path)
         return extracted_contents
-    
-    
+
     def remove_disclaimers(sentences):
         # Tokenize the text into sentences
-        
+
         # List of common disclaimer keywords to check against
-        disclaimer_keywords = ['disclaimer','herein','typically' ,'forward-looking statements', 'company','risk factors', 'legal notice', 'accounting policies', 'accounting principles','form 10-k', 'form 8-k' ,'this form 10-q', 'this quarterly report']
-        
+        disclaimer_keywords = ['disclaimer', 'herein', 'typically', 'forward-looking statements', 'company', 'risk factors', 'legal notice',
+                               'accounting policies', 'accounting principles', 'form 10-k', 'form 8-k', 'this form 10-q', 'this quarterly report']
+
         # Initialize a new list to store non-disclaimer sentences
         non_disclaimer_sentences = []
-        
+
         # Iterate through each sentence
         for sentence in sentences:
             # Convert the sentence to lowercase for case-insensitive matching
             lower_sentence = sentence.lower()
-            
+
             # Check if any disclaimer keywords exist in the sentence
             if any(keyword in lower_sentence for keyword in disclaimer_keywords):
                 continue  # Skip sentences containing disclaimers
             else:
                 non_disclaimer_sentences.append(sentence)
-        
+
         # Join the non-disclaimer sentences to form the final text
-        
+
         return non_disclaimer_sentences
-    
+
     def extract_keywords_sentences(sentences, stop_words):
-        s1 = [[word.lower() for word in re.sub(r'[^\w\s]', '', sentence).split()] for sentence in sentences]
-        s1 = [[word for word in tokens if word not in stop_words] for tokens in s1]
+        s1 = [[word.lower() for word in re.sub(r'[^\w\s]', '', sentence).split()]
+              for sentence in sentences]
+        s1 = [[word for word in tokens if word not in stop_words]
+              for tokens in s1]
         return s1
-    
+
     def extract_keywords_question(question, stop_words):
         tokens = word_tokenize(question)
         tokens = [word.lower() for word in tokens]
@@ -113,75 +111,79 @@ def main(page: ft.Page):
         lemmatizer = WordNetLemmatizer()
         tokens = [lemmatizer.lemmatize(word) for word in tokens]
         return tokens
-    
+
     def text_extractor(sentences, question, follow_up_count=3):
         ques = extract_keywords_question(question, stop_words)
         s1 = extract_keywords_sentences(sentences, stop_words)
-        
+
         indexsen = 0
         dictScore = dict()
-        
+
         # Calculate similarity scores for each sentence
         for sentence in s1:
             sum_score = 0
             for word in sentence:
                 for word1 in ques:
                     try:
-                        sum_score += (np.dot(kv_model[word], kv_model[word1])) / 0.5
+                        sum_score += (np.dot(kv_model[word],
+                                      kv_model[word1])) / 0.5
                     except:
                         continue
             dictScore[indexsen] = sum_score
             indexsen += 1
-        
-        sorted_scores = sorted(dictScore.items(), key=lambda x: x[1], reverse=True)
-        
+
+        sorted_scores = sorted(
+            dictScore.items(), key=lambda x: x[1], reverse=True)
+
         top_2_percent_index = math.ceil(len(sorted_scores) * 0.02)
-        threshold_score = sorted_scores[top_2_percent_index - 1][1] if top_2_percent_index > 0 else 0
-        
+        threshold_score = sorted_scores[top_2_percent_index -
+                                        1][1] if top_2_percent_index > 0 else 0
+
         wordCount = 0
         unique_sentences = set()
         final_text = ''
-        
+
         for index, score in sorted_scores:
             if score < threshold_score:
                 continue
-                
+
             current_sentence = sentences[index]
             if current_sentence in unique_sentences:
                 continue
-                
+
             unique_sentences.add(current_sentence)
             final_text += current_sentence + " "
             wordCount += len(word_tokenize(current_sentence))
-            
+
             for i in range(1, follow_up_count + 1):
                 next_index = index + i
                 if next_index < len(sentences):
                     next_sentence = sentences[next_index]
                     if next_sentence in unique_sentences:
                         continue
-                    
+
                     unique_sentences.add(next_sentence)
                     final_text += next_sentence + " "
                     wordCount += len(word_tokenize(next_sentence))
-            
+
             if wordCount >= 5000:
                 break
-    
+
         return final_text.strip()
-    
+
     def pdf_converter(filename):
         file = preprocess(filename)
         decoded_text = html.unescape(file)
         new_string = re.sub(r"(.?\|.?\|.*?)\s+(\d+)", "", decoded_text)
-        new_string = new_string.encode("utf-8").decode("utf-8").replace("\xa0", " ")
+        new_string = new_string.encode(
+            "utf-8").decode("utf-8").replace("\xa0", " ")
         new_string = new_string.replace("\r", "\n")
         new_string = new_string.replace(". ", ". \n")
         sentences = re.split(r'\n+', new_string)
-        return  remove_disclaimers(sentences)
-    
+        return remove_disclaimers(sentences)
+
     def detect_damage(name):
-    # load the image from disk and preprocess it
+        # load the image from disk and preprocess it
         current_directory = os.getcwd()
         folder_name = "insurance"
         folder_path = os.path.join(current_directory, folder_name)
@@ -192,7 +194,7 @@ def main(page: ft.Page):
             image.verify()
         except:
             return False
-        
+
         rf = Roboflow(api_key="tF51WFIm1hXPxzxz8KFZ")
         project = rf.workspace().project("car-damage-test-lqgll")
         model = project.version(1).model
@@ -203,14 +205,25 @@ def main(page: ft.Page):
         print("Damage is: ", classes[0])
         return ', '.join(classes)
 
-        
-    
     def claims_filer(policy, damage, notes):
-    
+
         instructions = """
     I want you to act as an Insurance Claims filer. Your job is to now file the most detailed claim one has ever seen. Here are the derails of the incident
-   
-    Keeo your generation within 600 tokens
+    Mention the cost amount as much as possible. One must be able to deduce the fact that we were able to report a claim, which cannot be rejected
+    The document must be very direct and as a bunch of headers, like a proper legal claims document . It must include the core components like
+    
+    "Damage:"\n "Claim based on location from insurance policy: \n" "amount to be claimed \n"
+    
+    Frame this as a proper legal document, where the other person has a chance to enter any additional information which is needed and not provided. 
+    
+    You must defend your claim using the policy also 
+    
+    Make sure you  always mention the claim amount and keep it in US Dollars. Do not leave anything upto the user to type.
+    
+    Do not include unnesseessary information. Do not include legalese statements about the company or some other details of the policy
+
+    
+    Keep your generation within 600 tokens
     
     The format you must follow is going to be "CLAIM\n\n:"
     
@@ -228,20 +241,20 @@ def main(page: ft.Page):
         Here is the relevant parts of the policy:
         {policy}
     
-        """.format(policy = policy, damages = damage, notes = notes, instructions=instructions)
+        """.format(policy=policy, damages=damage, notes=notes, instructions=instructions)
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-          
+            "Authorization": "Bearer " + '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'
         }
         data = {
             "model": "gpt-3.5-turbo-16k",
             "messages": [
-                    {"role": "user", "content": prompt},
-        
+                {"role": "user", "content": prompt},
+
             ]
         }
-        
+
         response = requests.post(url, headers=headers, data=json.dumps(data))
         result = response.json()
         print(result)
@@ -249,18 +262,33 @@ def main(page: ft.Page):
         print(summary)
         print('-'*150)
         return summary
-    
-    
-    
+
     def karen_generate(policy, damage, notes):
-    
+
         instructions = """
         
         NO WRITING
         
-        You are now Karen, one of the top Arguers in teh country. I am facing this massive issue where the insurance company is not giving me my claim. Write a stern reply to them like how karen would
+        You are now Karen, one of the top Arguers in the country. I am facing this massive issue where the insurance company is not giving me my insurance claim. Write a stern reply to them like how a karen would.
         
+        Karen's replies are short, very powerful and up to the point. They are way too angry and normally anger society, but it gets her work done. I am at that stage where I need to employ the power of Karen
         
+        Karen is very angry, often threatens to call the cops and even acts as a nuiscance to the public. We are trying to become a nuisance to the insurance company so that they settle our claims
+        
+        Karen is often coming from a position of privelage and they often believe in the concept of My way or the high way
+        
+        They have too much confience which is very hard to beat, and even when they are wrong are very strong to defend themselves
+        
+        YOU MUST NOT REVEAL YOUR IDENTITY, NO MATTER WHAT HAPPENS.
+        
+        Karen is making this complaint over the telephone. Make sure it is conveyed as such also. 
+        
+        YOU ARE NOT TO MENTION THE OTHER SIDE OF THE CONVERSATIONI. THIS IS A MONOLOOUGE. 
+        
+    I want you to act as an Insurance Claims filer. Your job is to now file the most detailed claim one has ever seen. Here are the derails of the incident
+    Mention the cost amount as much as possible. One must be able to deduce the fact that we were able to report a claim, which cannot be rejected
+    Make sure this seems like the dialoge of a Karen in a face to face conversation, and not a written email. All of this text will be actually spoken by karen
+    
     Follow the format :
     "KAREN \n\n: "
     
@@ -280,39 +308,41 @@ def main(page: ft.Page):
         Here is the relevant parts of the policy:
         {policy}
     
-        """.format(policy = policy, damages = damage, notes = notes, instructions=instructions)
+        """.format(policy=policy, damages=damage, notes=notes, instructions=instructions)
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            
+            "Authorization": "Bearer " + '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'
         }
         data = {
             "model": "gpt-3.5-turbo-16k",
             "messages": [
-                    {"role": "user", "content": prompt},
-        
+                {"role": "user", "content": prompt},
+
             ]
         }
-        
+
         response = requests.post(url, headers=headers, data=json.dumps(data))
         result = response.json()
-        
+
         summary = result['choices'][0]['message']['content']
-   
+
         return summary
 
     def pick_insurance(e: ft.FilePickerResultEvent):
         insurance_doc.value = (
-            ", ".join(map(lambda f: f.name, e.files)) if e.files else "Cancelled!"
+            ", ".join(map(lambda f: f.name, e.files)
+                      ) if e.files else "Cancelled!"
         )
         insurance_doc.update()
-    
+
     def pick_photos(e: ft.FilePickerResultEvent):
         photo.value = (
-            ", ".join(map(lambda f: f.name, e.files)) if e.files else "Cancelled!"
+            ", ".join(map(lambda f: f.name, e.files)
+                      ) if e.files else "Cancelled!"
         )
         photo.update()
-    
+
     test_name = ft.Text()
     api_txt = ft.Text()
 
@@ -321,11 +351,11 @@ def main(page: ft.Page):
 
     pick_photo_dialog = ft.FilePicker(on_result=pick_photos)
     photo = ft.Text()
-    
+
     claim = False
     karen = False
     karen_text = ''
-    
+
     def sign_in():
         cap = cv2.VideoCapture(1)
         try:
@@ -343,16 +373,17 @@ def main(page: ft.Page):
             if frame is not None:
                 # Find all the faces and their encodings in the current frame
                 face_locations = face_recognition.face_locations(frame)
-                face_encodings = face_recognition.face_encodings(frame, face_locations)
+                face_encodings = face_recognition.face_encodings(
+                    frame, face_locations)
 
                 # Initialize matches as an empty list
                 matches = []
 
                 # Loop through each face found in the frame
                 for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                # Compare the current face encoding with the known face encodings
+                    # Compare the current face encoding with the known face encodings
                     matches = face_recognition.compare_faces(
-                    known_face_encodings, face_encoding)
+                        known_face_encodings, face_encoding)
 
                 # If a match is found, display a welcome message and stop capturing video
                 if True in matches:
@@ -367,11 +398,9 @@ def main(page: ft.Page):
                     print("Face Not Found!\nTry Again!")
                     time.sleep(0.5)
 
-                
             else:
                 print("Waiting for webcam...")
                 continue
-
 
     def sign_up(name):
         cap = cv2.VideoCapture(0)
@@ -389,11 +418,12 @@ def main(page: ft.Page):
             if frame is not None:
                 # Find all the faces and their encodings in the current frame
                 face_locations = face_recognition.face_locations(frame)
-                face_encodings = face_recognition.face_encodings(frame, face_locations)
+                face_encodings = face_recognition.face_encodings(
+                    frame, face_locations)
 
                 # Prompt user to enter a label for the face
                 if len(face_encodings) > 0:
-                # cv2.imshow('Video', frame)
+                    # cv2.imshow('Video', frame)
                     label = name
                     known_face_encodings.append(face_encodings[0])
                     known_face_labels.append(label)
@@ -411,8 +441,8 @@ def main(page: ft.Page):
                 print("Waiting for webcam...")
                 continue
 
-
     # Verbwire
+
     def mint_custom_nft(data, username):
         url = "https://api.verbwire.com/v1/nft/mint/mintFromMetadata"
 
@@ -446,7 +476,7 @@ def main(page: ft.Page):
         headers = {
             "accept": "application/json",
             "content-type": "multipart/form-data; boundary=---011000010111000001101001",
-            
+            "X-API-Key": "sk_live_b7159a98-601c-455e-b0e8-fd8cb42b48b3"
         }
 
         response = requests.post(url, data=payload, headers=headers)
@@ -458,7 +488,7 @@ def main(page: ft.Page):
         url = "https://api.verbwire.com/v1/nft/data/owned?walletAddress=0x717aeB89048f10061C0dCcdEB2592a60bA4F1a79&chain=goerli"
         headers = {
             "accept": "application/json",
-            
+            "X-API-Key": "sk_live_b7159a98-601c-455e-b0e8-fd8cb42b48b3"
         }
         response = requests.get(url, headers=headers)
 
@@ -482,7 +512,6 @@ def main(page: ft.Page):
                 token_attributes.appends(main_resp['attributes'])
         return token_attributes
 
-
     def claim_func(e):
         api_txt.value = "LOADING......"
         api_txt.update()
@@ -496,12 +525,13 @@ def main(page: ft.Page):
         damage = detect_damage(photo.value)
         print(damage)
         print("three")
-        notes = test_name.value 
+        notes = test_name.value
         print(notes)
         print('four')
         decoded_text = html.unescape(policy)
         new_string = re.sub(r"(.?\|.?\|.*?)\s+(\d+)", "", decoded_text)
-        new_string = new_string.encode("utf-8").decode("utf-8").replace("\xa0", " ")
+        new_string = new_string.encode(
+            "utf-8").decode("utf-8").replace("\xa0", " ")
         new_string = new_string.replace("\r", "\n")
         new_string = new_string.replace(". ", ". \n")
         print('four')
@@ -517,7 +547,7 @@ def main(page: ft.Page):
         print(claims_text)
         api_txt.value = claims_text
         api_txt.update()
-    
+
     def karen_func(e):
         api_txt.value = "LOADING......"
         api_txt.update()
@@ -528,12 +558,13 @@ def main(page: ft.Page):
         damage = detect_damage(photo.value)
         print(damage)
         print("three")
-        notes = test_name.value 
+        notes = test_name.value
         print(notes)
         print('four')
         decoded_text = html.unescape(policy)
         new_string = re.sub(r"(.?\|.?\|.*?)\s+(\d+)", "", decoded_text)
-        new_string = new_string.encode("utf-8").decode("utf-8").replace("\xa0", " ")
+        new_string = new_string.encode(
+            "utf-8").decode("utf-8").replace("\xa0", " ")
         new_string = new_string.replace("\r", "\n")
         new_string = new_string.replace(". ", ". \n")
         print('four')
@@ -548,48 +579,42 @@ def main(page: ft.Page):
         claims_text = karen_generate(summary, damage, notes)
         print(claims_text)
         api_txt.value = claims_text
-        api_txt.update()        
+        api_txt.update()
         global karen_text
         karen_text = claims_text
         global claim
         claim = True
         global karen
         karen = True
-    
-
 
     def file_claim(e):
-        
+
         global claim
         if claim == False:
             return
-        
 
         api_txt.value = ('Authenticating Your Face .... \n We will authenticate you securely using your face before letting you file the claim. \n The system uses the nft stored in your Verbwire account to authenticate your identity')
         api_txt.update()
         sign_in()
-        api_txt.value = ('Sending Claim .... \n We will send your claim via a smart contract to the insurance company ')
+        api_txt.value = (
+            "Sending Claim .... \nWe will send your claim via a smart contract to the insurance company")
         api_txt.update()
         damage = detect_damage(photo.value)
         print(damage)
         claim = False
-   
-        
+
     def call(e):
         global claim
         global karen
         print(claim)
         print(karen)
         if claim == False or karen == False:
-            return 
+            return
         api_txt.value = ('Calling......')
         api_txt.update()
         make_call()
         claim = False
         karen = False
-
-
-   
 
     def btn_click(e):
         if not txt_name.value:
@@ -600,103 +625,138 @@ def main(page: ft.Page):
             test_name.value = (f"{name}")
             test_name.update()
 
-    txt_name = ft.TextField(label="Add Notes")
+    page.fonts = {"Nunito": './Nunito/static/Nunito-Regular.ttf'}
+    page.theme = Theme(font_family="Nunito")
+    txt_name = ft.TextField(label="Add Incident Details")
     page.overlay.append(pick_insurance_dialog)
     page.overlay.append(pick_photo_dialog)
-
+    page.window_maximized = True
+    pr = ft.ProgressRing(width=16, height=16, stroke_width=2)
+    page.bgcolor = '#000814'
+    page.scroll = True
+    page.update()
 
     page.add(
- ft.Row(
-        [
-            ft.Column(
-                
-                [
-                ft.Row(
-                    [
-                        ft.ElevatedButton(
-                            "Upload Insurance Document",
-                            icon=ft.icons.UPLOAD_FILE,
-                            on_click=lambda _: pick_insurance_dialog.pick_files(
-                                allow_multiple=True
-                            ),
-                        ),
-                        insurance_doc,
-                    ]
-                ),
-                ft.Row(
-                    [
-                        ft.ElevatedButton(
-                            "Upload Photos",
-                            icon=ft.icons.UPLOAD_FILE,
-                            on_click=lambda _: pick_photo_dialog.pick_files(
-                                allow_multiple=True
-                            ),
-                        ),
-                        photo,
-                    ]
-                ),
-                
+        ft.ResponsiveRow(
+            [
                 ft.Column(
                     [
-                       txt_name, 
-                       ft.ElevatedButton("Upload Your Notes!", on_click=btn_click),
-                       ft.Container(
-                           width = 350,
-                           height = 120,
-                           content = test_name
-                           ),
-                    ]
+                        ft.ResponsiveRow(
+                            [
+                                ft.ElevatedButton(
+                                    "Upload Insurance Document",
+                                    icon=ft.icons.UPLOAD_FILE,
+                                    bgcolor='003566',
+                                    on_click=lambda _: pick_insurance_dialog.pick_files(
+                                        allow_multiple=True
+                                    ),
+                                ),
+                                insurance_doc,
+                            ],
+
+                        ),
+                        ft.ResponsiveRow(
+                            [
+                                ft.ElevatedButton(
+                                    "Upload Photos",
+                                    icon=ft.icons.PHOTO_CAMERA_ROUNDED,
+                                    bgcolor='003566',
+                                    on_click=lambda _: pick_photo_dialog.pick_files(
+                                        allow_multiple=True
+                                    ),
+                                ),
+                                photo,
+                            ]
+                        ),
+
+                        ft.Column(
+                            [
+                                txt_name,
+                                ft.ElevatedButton(
+                                    "Upload Your Details", on_click=btn_click),
+                            ]
+                        ),
+
+                        ft.ResponsiveRow(
+                            [
+                                ft.Container(
+                                    content=test_name,
+                                    border=ft.border.all(
+                                        2, ft.colors.YELLOW_900),
+                                    border_radius=ft.border_radius.all(5),
+                                    alignment=ft.alignment.Alignment(0, 0),
+                                )],
+                        ),
+
+                        ft.Divider(
+                            color='#ffd60a', thickness=5),
+
+                        ft.ResponsiveRow(
+
+                            [
+                                ft.ElevatedButton(
+                                    "CLAIM",
+                                    icon=ft.icons.CAR_CRASH_OUTLINED,
+                                    bgcolor='003566',
+                                    on_click=claim_func),
+                                ft.ElevatedButton(
+                                    "File Claim",
+                                    icon=ft.icons.VERIFIED_OUTLINED,
+                                    bgcolor='003566',
+                                    on_click=file_claim, disabled=claim),
+
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+
+
+                        ),
+
+                        ft.Divider(
+                            color='#ffd60a', thickness=5),
+
+                        ft.ResponsiveRow(
+
+                            [
+                                ft.ElevatedButton(
+                                    "KAREN",
+                                    bgcolor='003566',
+                                    icon=ft.icons.PERSON_2_OUTLINED,
+                                    on_click=karen_func),
+                                ft.ElevatedButton(
+                                    "Call",
+                                    bgcolor='003566',
+                                    icon=ft.icons.TTY_OUTLINED,
+                                    on_click=call),
+                            ],
+
+                            alignment=ft.MainAxisAlignment.CENTER,
+
+
+                        )
+
+
+                    ],
+
+
+
                 ),
-                
-                ft.Row(
-                    
-                    [
-                        ft.ElevatedButton("KAREN!", on_click=karen_func),
-                ft.ElevatedButton("CLAIM!", on_click=claim_func),
 
-],
-                    alignment=ft.MainAxisAlignment.CENTER,
-   
-                    
-                    ),
-                
-                
-                ft.Row(
-                     
-                    [
-
-                        ft.ElevatedButton("File Claim!", on_click=file_claim, disabled = claim),
-                    ft.ElevatedButton("Call!", on_click=call),
-
-],
-                    alignment=ft.MainAxisAlignment.CENTER,
-   
-                    
-                    )
-                
-                
-                ],
-                
-
-                ),
-            
-            ft.Container(
-                width = 30
-                ),
-            
-            ft.Container(
+                ft.VerticalDivider(width=3, color="white"),
+                ft.Container(
                     margin=10,
-    padding=10,
-
-                
-                width = 800,
-                height = 750,
-                content = api_txt,
+                    padding=ft.padding.all(10),
+                    width=700,
+                    height=680,
+                    content=api_txt,
+                    border=ft.border.all(2, ft.colors.YELLOW_900),
+                    alignment=ft.alignment.Alignment(1, 0),
+                    border_radius=ft.border_radius.all(30)
                 ),
             ],
-        alignment=ft.MainAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.CENTER,
 
-     ),
+        ),
     )
+
 
 ft.app(target=main)
